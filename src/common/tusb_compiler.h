@@ -112,11 +112,11 @@
 //--------------------------------------------------------------------+
 
 // TODO refactor since __attribute__ is supported across many compiler
-#if defined(__GNUC__)
+#if defined(__GNUC__) || (__clang__)
   #define TU_ATTR_ALIGNED(Bytes)        __attribute__ ((aligned(Bytes)))
   #define TU_ATTR_SECTION(sec_name)     __attribute__ ((section(#sec_name)))
   #define TU_ATTR_PACKED                __attribute__ ((packed))
-  #define TU_ATTR_WEAK                  __attribute__ ((weak))
+  #define TU_ATTR_WEAK                  __attribute__ ((weak_import))
   #define TU_ATTR_ALWAYS_INLINE         __attribute__ ((always_inline))
   #define TU_ATTR_DEPRECATED(mess)      __attribute__ ((deprecated(mess))) // warn if function with this attribute is used
   #define TU_ATTR_UNUSED                __attribute__ ((unused))           // Function/Variable is meant to be possibly unused

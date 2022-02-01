@@ -36,6 +36,7 @@
 //--------------------------------------------------------------------+
 #define HOST_HCD_XFER_INTERRUPT // TODO interrupt is used widely, should always be enalbed
 #define OHCI_PERIODIC_LIST (defined HOST_HCD_XFER_INTERRUPT || defined HOST_HCD_XFER_ISOCHRONOUS)
+#define MAX_RHPORTS 4
 
 // TODO merge OHCI with EHCI
 enum {
@@ -101,7 +102,8 @@ typedef struct TU_ATTR_ALIGNED(16)
 	uint32_t used              : 1;
 	uint32_t is_interrupt_xfer : 1;
 	uint32_t is_stalled        : 1;
-	uint32_t                   : 2;
+	uint32_t is_dma_buff       : 1;
+	uint32_t                   : 1;
 
 	// Word 1
 	uint32_t td_tail;
@@ -159,7 +161,7 @@ typedef struct TU_ATTR_ALIGNED(256)
   struct {
     ohci_ed_t ed;
     ohci_gtd_t gtd;
-  }control[CFG_TUH_DEVICE_MAX+1];
+  }control[CFG_TUH_DEVICE_MAX+CFG_TUH_HUB+1];
 
   //  ochi_itd_t itd[OHCI_MAX_ITD]; // itd requires alignment of 32
   ohci_ed_t ed_pool[HCD_MAX_ENDPOINT];
@@ -245,7 +247,7 @@ typedef volatile struct
   };
 
   union {
-    uint32_t rhport_status[2]; // TODO NXP OHCI controller only has 2 ports
+    uint32_t rhport_status[MAX_RHPORTS];
     struct {
       uint32_t current_connect_status             : 1;
       uint32_t port_enable_status                 : 1;
@@ -262,11 +264,11 @@ typedef volatile struct
       uint32_t port_over_current_indicator_change : 1;
       uint32_t port_reset_status_change           : 1;
       uint32_t TU_RESERVED                        : 11;
-    }rhport_status_bit[2];
+    }rhport_status_bit[MAX_RHPORTS];
   };
 }ohci_registers_t;
 
-TU_VERIFY_STATIC( sizeof(ohci_registers_t) == 0x5c, "size is not correct");
+TU_VERIFY_STATIC( sizeof(ohci_registers_t) == (0x54 + (4 * MAX_RHPORTS)), "size is not correct");
 
 #ifdef __cplusplus
  }

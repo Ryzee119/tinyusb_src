@@ -138,18 +138,19 @@ enum {
   PID_FROM_TD = 0,
 };
 
+typedef struct
+{
+  uint8_t *dma_buf;
+  uint8_t *user_buf;
+  uint16_t user_len;
+} user_data_t;
+
 //--------------------------------------------------------------------+
 // INTERNAL OBJECT & FUNCTION DECLARATION
 //--------------------------------------------------------------------+
-CFG_TUSB_MEM_SECTION TU_ATTR_ALIGNED(256) static ohci_data_t ohci_data;
+CFG_TUSB_MEM_SECTION TU_ATTR_ALIGNED(256) static ohci_data_t *ohci_data;
 
-static ohci_ed_t * const p_ed_head[] =
-{
-    [TUSB_XFER_CONTROL]     = &ohci_data.control[0].ed,
-    [TUSB_XFER_BULK   ]     = &ohci_data.bulk_head_ed,
-    [TUSB_XFER_INTERRUPT]   = &ohci_data.period_head_ed,
-    [TUSB_XFER_ISOCHRONOUS] = NULL // TODO Isochronous
-};
+static ohci_ed_t *p_ed_head[4];
 
 static void ed_list_insert(ohci_ed_t * p_pre, ohci_ed_t * p_ed);
 static void ed_list_remove_by_addr(ohci_ed_t * p_head, uint8_t dev_addr);
@@ -163,29 +164,36 @@ bool hcd_init(uint8_t rhport)
   (void) rhport;
 
   //------------- Data Structure init -------------//
-  tu_memclr(&ohci_data, sizeof(ohci_data_t));
-  for(uint8_t i=0; i<32; i++)
+  ohci_data = tusb_busalloc(sizeof(ohci_data_t));
+  tu_memclr(ohci_data, sizeof(ohci_data_t));
+
+  p_ed_head[TUSB_XFER_CONTROL] = &ohci_data->control[0].ed;
+  p_ed_head[TUSB_XFER_BULK] = &ohci_data->bulk_head_ed;
+  p_ed_head[TUSB_XFER_INTERRUPT] = &ohci_data->period_head_ed;
+  p_ed_head[TUSB_XFER_ISOCHRONOUS] = NULL; // TODO Isochronous
+
+  for (uint8_t i = 0; i < 32; i++)
   { // assign all interrupt pointes to period head ed
-    ohci_data.hcca.interrupt_table[i] = (uint32_t) &ohci_data.period_head_ed;
+    ohci_data->hcca.interrupt_table[i] = (uint32_t)VIR2BUS(&ohci_data->period_head_ed);
   }
 
-  ohci_data.control[0].ed.skip  = 1;
-  ohci_data.bulk_head_ed.skip   = 1;
-  ohci_data.period_head_ed.skip = 1;
+  ohci_data->control[0].ed.skip  = 1;
+  ohci_data->bulk_head_ed.skip   = 1;
+  ohci_data->period_head_ed.skip = 1;
 
   // reset controller
   OHCI_REG->command_status_bit.controller_reset = 1;
   while( OHCI_REG->command_status_bit.controller_reset ) {} // should not take longer than 10 us
 
   //------------- init ohci registers -------------//
-  OHCI_REG->control_head_ed = (uint32_t) &ohci_data.control[0].ed;
-  OHCI_REG->bulk_head_ed    = (uint32_t) &ohci_data.bulk_head_ed;
-  OHCI_REG->hcca            = (uint32_t) &ohci_data.hcca;
+  OHCI_REG->control_head_ed = (uint32_t) VIR2BUS(&ohci_data->control[0].ed);
+  OHCI_REG->bulk_head_ed    = (uint32_t) VIR2BUS(&ohci_data->bulk_head_ed);
+  OHCI_REG->hcca            = (uint32_t) VIR2BUS(&ohci_data->hcca);
 
   OHCI_REG->interrupt_disable = OHCI_REG->interrupt_enable; // disable all interrupts
   OHCI_REG->interrupt_status  = OHCI_REG->interrupt_status; // clear current set bits
   OHCI_REG->interrupt_enable  = OHCI_INT_WRITEBACK_DONEHEAD_MASK | OHCI_INT_RESUME_DETECTED_MASK |
-      OHCI_INT_UNRECOVERABLE_ERROR_MASK | OHCI_INT_FRAME_OVERFLOW_MASK | OHCI_INT_RHPORT_STATUS_CHANGE_MASK |
+      OHCI_INT_UNRECOVERABLE_ERROR_MASK | OHCI_INT_FRAME_OVERFLOW_MASK | /*OHCI_INT_RHPORT_STATUS_CHANGE_MASK |*/
       OHCI_INT_MASTER_ENABLE_MASK;
 
   OHCI_REG->control |= OHCI_CONTROL_CONTROL_BULK_RATIO | OHCI_CONTROL_LIST_CONTROL_ENABLE_MASK |
@@ -197,35 +205,38 @@ bool hcd_init(uint8_t rhport)
   OHCI_REG->control_bit.hc_functional_state = OHCI_CONTROL_FUNCSTATE_OPERATIONAL; // make HC's state to operational state TODO use this to suspend (save power)
   OHCI_REG->rh_status_bit.local_power_status_change = 1; // set global power for ports
 
+  OHCI_REG->control_bit.hc_functional_state = OHCI_CONTROL_FUNCSTATE_RESUME;
+  OHCI_REG->control_bit.hc_functional_state = OHCI_CONTROL_FUNCSTATE_OPERATIONAL;
+  OHCI_REG->interrupt_enable |= OHCI_INT_RHPORT_STATUS_CHANGE_MASK;
+
+  hcd_port_reset(0);
+
   return true;
 }
 
 uint32_t hcd_frame_number(uint8_t rhport)
 {
   (void) rhport;
-  return (ohci_data.frame_number_hi << 16) | OHCI_REG->frame_number;
+  return (ohci_data->frame_number_hi << 16) | OHCI_REG->frame_number;
 }
 
 
 //--------------------------------------------------------------------+
 // PORT API
 //--------------------------------------------------------------------+
-void hcd_port_reset(uint8_t hostid)
+void hcd_port_reset(uint8_t rhport)
 {
-  (void) hostid;
-  OHCI_REG->rhport_status[0] = RHPORT_PORT_RESET_STATUS_MASK;
+  OHCI_REG->rhport_status[rhport] = RHPORT_PORT_RESET_STATUS_MASK;
 }
 
-bool hcd_port_connect_status(uint8_t hostid)
+bool hcd_port_connect_status(uint8_t rhport)
 {
-  (void) hostid;
-  return OHCI_REG->rhport_status_bit[0].current_connect_status;
+  return OHCI_REG->rhport_status_bit[rhport].current_connect_status;
 }
 
-tusb_speed_t hcd_port_speed_get(uint8_t hostid)
+tusb_speed_t hcd_port_speed_get(uint8_t rhport)
 {
-  (void) hostid;
-  return OHCI_REG->rhport_status_bit[0].low_speed_device_attached ? TUSB_SPEED_LOW : TUSB_SPEED_FULL;
+  return OHCI_REG->rhport_status_bit[rhport].low_speed_device_attached ? TUSB_SPEED_LOW : TUSB_SPEED_FULL;
 }
 
 // endpoints are tied to an address, which only reclaim after a long delay when enumerating
@@ -238,7 +249,7 @@ void hcd_device_close(uint8_t rhport, uint8_t dev_addr)
   // addr0 serves as static head --> only set skip bit
   if ( dev_addr == 0 )
   {
-    ohci_data.control[0].ed.skip = 1;
+    ohci_data->control[0].ed.skip = 1;
   }else
   {
     // remove control
@@ -303,15 +314,31 @@ static void gtd_init(ohci_gtd_t* p_td, uint8_t* data_ptr, uint16_t total_bytes)
   p_td->delay_interrupt        = OHCI_INT_ON_COMPLETE_NO;
   p_td->condition_code         = OHCI_CCODE_NOT_ACCESSED;
 
+  //If the user provider buffed is not DMA'able memory, create a DMA buffer and copy the data into it.
+  if (total_bytes && data_ptr && CAN_DMA(data_ptr) == false)
+  {
+    uint8_t *dma_buff = tusb_busalloc(total_bytes + sizeof(user_data_t));
+    memcpy(dma_buff, data_ptr, total_bytes);
+    user_data_t *udat =  (user_data_t *)&dma_buff[total_bytes];
+    udat->dma_buf = dma_buff;
+    udat->user_buf = data_ptr;
+    udat->user_len = total_bytes;
+    data_ptr = VIR2BUS(dma_buff);
+  }
+  else if (data_ptr)
+  {
+    data_ptr = VIR2BUS(data_ptr);
+  }
+
   p_td->current_buffer_pointer = data_ptr;
   p_td->buffer_end             = total_bytes ? (data_ptr + total_bytes-1) : data_ptr;
 }
 
 static ohci_ed_t * ed_from_addr(uint8_t dev_addr, uint8_t ep_addr)
 {
-  if ( tu_edpt_number(ep_addr) == 0 ) return &ohci_data.control[dev_addr].ed;
+  if ( tu_edpt_number(ep_addr) == 0 ) return &ohci_data->control[dev_addr].ed;
 
-  ohci_ed_t* ed_pool = ohci_data.ed_pool;
+  ohci_ed_t* ed_pool = ohci_data->ed_pool;
 
   for(uint32_t i=0; i<HCD_MAX_ENDPOINT; i++)
   {
@@ -327,7 +354,7 @@ static ohci_ed_t * ed_from_addr(uint8_t dev_addr, uint8_t ep_addr)
 
 static ohci_ed_t * ed_find_free(void)
 {
-  ohci_ed_t* ed_pool = ohci_data.ed_pool;
+  ohci_ed_t* ed_pool = ohci_data->ed_pool;
 
   for(uint8_t i = 0; i < HCD_MAX_ENDPOINT; i++)
   {
@@ -340,7 +367,7 @@ static ohci_ed_t * ed_find_free(void)
 static void ed_list_insert(ohci_ed_t * p_pre, ohci_ed_t * p_ed)
 {
   p_ed->next = p_pre->next;
-  p_pre->next = (uint32_t) p_ed;
+  p_pre->next = (uint32_t) VIR2BUS(p_ed);
 }
 
 static void ed_list_remove_by_addr(ohci_ed_t * p_head, uint8_t dev_addr)
@@ -349,7 +376,7 @@ static void ed_list_remove_by_addr(ohci_ed_t * p_head, uint8_t dev_addr)
 
   while( p_prev->next )
   {
-    ohci_ed_t* ed = (ohci_ed_t*) p_prev->next;
+    ohci_ed_t* ed = (ohci_ed_t*) BUS2VIR((ohci_ed_t*) p_prev->next);
 
     if (ed->dev_addr == dev_addr)
     {
@@ -357,12 +384,12 @@ static void ed_list_remove_by_addr(ohci_ed_t * p_head, uint8_t dev_addr)
       p_prev->next = ed->next;
 
       // point the removed ED's next pointer to list head to make sure HC can always safely move away from this ED
-      ed->next = (uint32_t) p_head;
+      ed->next = (uint32_t) VIR2BUS(p_head);
       ed->used = 0;
     }
 
     // check next valid since we could remove it
-    if (p_prev->next) p_prev = (ohci_ed_t*) p_prev->next;
+    if (p_prev->next) p_prev = (ohci_ed_t*) BUS2VIR((ohci_ed_t*) p_prev->next);
   }
 }
 
@@ -370,7 +397,7 @@ static ohci_gtd_t * gtd_find_free(void)
 {
   for(uint8_t i=0; i < HCD_MAX_XFER; i++)
   {
-    if ( !ohci_data.gtd_pool[i].used ) return &ohci_data.gtd_pool[i];
+    if ( !ohci_data->gtd_pool[i].used ) return &ohci_data->gtd_pool[i];
   }
 
   return NULL;
@@ -381,11 +408,11 @@ static void td_insert_to_ed(ohci_ed_t* p_ed, ohci_gtd_t * p_gtd)
   // tail is always NULL
   if ( tu_align16(p_ed->td_head.address) == 0 )
   { // TD queue is empty --> head = TD
-    p_ed->td_head.address |= (uint32_t) p_gtd;
+    p_ed->td_head.address |= (uint32_t) VIR2BUS(p_gtd);
   }
   else
   { // TODO currently only support queue up to 2 TD each endpoint at a time
-    ((ohci_gtd_t*) tu_align16(p_ed->td_head.address))->next = (uint32_t) p_gtd;
+    ((ohci_gtd_t*) tu_align16((uint32_t)BUS2VIR((void *)p_ed->td_head.address)))->next = (uint32_t) VIR2BUS(p_gtd);
   }
 }
 
@@ -405,7 +432,7 @@ bool hcd_edpt_open(uint8_t rhport, uint8_t dev_addr, tusb_desc_endpoint_t const 
 
   if ( ep_desc->bEndpointAddress == 0 )
   {
-    p_ed = &ohci_data.control[dev_addr].ed;
+    p_ed = &ohci_data->control[dev_addr].ed;
   }else
   {
     p_ed = ed_find_free();
@@ -430,9 +457,11 @@ bool hcd_edpt_open(uint8_t rhport, uint8_t dev_addr, tusb_desc_endpoint_t const 
 bool hcd_setup_send(uint8_t rhport, uint8_t dev_addr, uint8_t const setup_packet[8])
 {
   (void) rhport;
+  ohci_ed_t* ed   = &ohci_data->control[dev_addr].ed;
+  ohci_gtd_t *qtd = &ohci_data->control[dev_addr].gtd;
 
-  ohci_ed_t* ed   = &ohci_data.control[dev_addr].ed;
-  ohci_gtd_t *qtd = &ohci_data.control[dev_addr].gtd;
+
+  ed->is_dma_buff = CAN_DMA((void *)setup_packet);
 
   gtd_init(qtd, (uint8_t*) setup_packet, 8);
   qtd->index           = dev_addr;
@@ -441,8 +470,7 @@ bool hcd_setup_send(uint8_t rhport, uint8_t dev_addr, uint8_t const setup_packet
   qtd->delay_interrupt = 0;
 
   //------------- Attach TDs list to Control Endpoint -------------//
-  ed->td_head.address = (uint32_t) qtd;
-
+  ed->td_head.address = (uint32_t) VIR2BUS(qtd);
   OHCI_REG->command_status_bit.control_list_filled = 1;
 
   return true;
@@ -451,14 +479,15 @@ bool hcd_setup_send(uint8_t rhport, uint8_t dev_addr, uint8_t const setup_packet
 bool hcd_edpt_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr, uint8_t * buffer, uint16_t buflen)
 {
   (void) rhport;
-
   uint8_t const epnum = tu_edpt_number(ep_addr);
   uint8_t const dir   = tu_edpt_dir(ep_addr);
 
   if ( epnum == 0 )
   {
-    ohci_ed_t*  ed  = &ohci_data.control[dev_addr].ed;
-    ohci_gtd_t* gtd = &ohci_data.control[dev_addr].gtd;
+    ohci_ed_t*  ed  = &ohci_data->control[dev_addr].ed;
+    ohci_gtd_t* gtd = &ohci_data->control[dev_addr].gtd;
+
+    ed->is_dma_buff = CAN_DMA(buffer);
 
     gtd_init(gtd, buffer, buflen);
 
@@ -467,7 +496,7 @@ bool hcd_edpt_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr, uint8_t * 
     gtd->data_toggle     = GTD_DT_DATA1; // Both Data and Ack stage start with DATA1
     gtd->delay_interrupt = 0;
 
-    ed->td_head.address = (uint32_t) gtd;
+    ed->td_head.address = (uint32_t) VIR2BUS(gtd);
 
     OHCI_REG->command_status_bit.control_list_filled = 1;
   }else
@@ -475,10 +504,12 @@ bool hcd_edpt_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr, uint8_t * 
     ohci_ed_t * ed = ed_from_addr(dev_addr, ep_addr);
     ohci_gtd_t* gtd = gtd_find_free();
 
+    ed->is_dma_buff = CAN_DMA(buffer);
+
     TU_ASSERT(gtd);
 
     gtd_init(gtd, buffer, buflen);
-    gtd->index = ed-ohci_data.ed_pool;
+    gtd->index = ed-ohci_data->ed_pool;
     gtd->delay_interrupt = 0;
 
     td_insert_to_ed(ed, gtd);
@@ -515,31 +546,32 @@ static ohci_td_item_t* list_reverse(ohci_td_item_t* td_head)
 
   while(td_head != NULL)
   {
+    td_head = BUS2VIR(td_head);
     uint32_t next = td_head->next;
 
     // make current's item become reverse's first item
     td_head->next = (uint32_t) td_reverse_head;
-    td_reverse_head  = td_head;
+    td_reverse_head  = VIR2BUS(td_head);
 
     td_head = (ohci_td_item_t*) next; // advance to next item
   }
 
-  return td_reverse_head;
+  return BUS2VIR(td_reverse_head);
 }
 
 static inline bool gtd_is_control(ohci_gtd_t const * const p_qtd)
 {
-  return ((uint32_t) p_qtd) < ((uint32_t) ohci_data.gtd_pool); // check ohci_data_t for memory layout
+  return ((uint32_t) p_qtd) < ((uint32_t) ohci_data->gtd_pool); // check ohci_data_t for memory layout
 }
 
 static inline ohci_ed_t* gtd_get_ed(ohci_gtd_t const * const p_qtd)
 {
   if ( gtd_is_control(p_qtd) )
   {
-    return &ohci_data.control[p_qtd->index].ed;
+    return &ohci_data->control[p_qtd->index].ed;
   }else
   {
-    return &ohci_data.ed_pool[p_qtd->index];
+    return &ohci_data->ed_pool[p_qtd->index];
   }
 }
 
@@ -554,13 +586,17 @@ static inline uint32_t gtd_xfer_byte_left(uint32_t buffer_end, uint32_t current_
       tu_offset4k(buffer_end) - tu_offset4k(current_buffer) + 1;
 }
 
+static void deferred_dma_free(void *param)
+{
+  BUS_FREE(param);
+}
+
 static void done_queue_isr(uint8_t hostid)
 {
   (void) hostid;
 
   // done head is written in reversed order of completion --> need to reverse the done queue first
-  ohci_td_item_t* td_head = list_reverse ( (ohci_td_item_t*) tu_align16(ohci_data.hcca.done_head) );
-
+  ohci_td_item_t* td_head = list_reverse ( (ohci_td_item_t*) tu_align16(ohci_data->hcca.done_head) );
   while( td_head != NULL )
   {
     // TODO check if td_head is iso td
@@ -568,14 +604,11 @@ static void done_queue_isr(uint8_t hostid)
     ohci_gtd_t * const qtd = (ohci_gtd_t *) td_head;
     xfer_result_t const event = (qtd->condition_code == OHCI_CCODE_NO_ERROR) ? XFER_RESULT_SUCCESS :
                                 (qtd->condition_code == OHCI_CCODE_STALL) ? XFER_RESULT_STALLED : XFER_RESULT_FAILED;
-
     qtd->used = 0; // free TD
     if ( (qtd->delay_interrupt == OHCI_INT_ON_COMPLETE_YES) || (event != XFER_RESULT_SUCCESS) )
     {
       ohci_ed_t * const ed  = gtd_get_ed(qtd);
-
       uint32_t const xferred_bytes = qtd->expected_bytes - gtd_xfer_byte_left((uint32_t) qtd->buffer_end, (uint32_t) qtd->current_buffer_pointer);
-
       // NOTE Assuming the current list is BULK and there is no other EDs in the list has queued TDs.
       // When there is a error resulting this ED is halted, and this EP still has other queued TD
       // --> the Bulk list only has this halted EP queueing TDs (remaining)
@@ -585,6 +618,7 @@ static void done_queue_isr(uint8_t hostid)
       // the TailP must be set back to NULL for processing remaining TDs
       if ((event != XFER_RESULT_SUCCESS))
       {
+        TU_LOG1("XFER ERROR\n");
         ed->td_tail &= 0x0Ful;
         ed->td_tail |= tu_align16(ed->td_head.address); // mark halted EP as empty queue
         if ( event == XFER_RESULT_STALLED ) ed->is_stalled = 1;
@@ -592,10 +626,24 @@ static void done_queue_isr(uint8_t hostid)
 
       uint8_t dir = (ed->ep_number == 0) ? (qtd->pid == PID_IN) : (ed->pid == PID_IN);
 
+      //If the provided user buffer was not DMA'able memory, copy back the data into the user's buffer
+      if (dir && xferred_bytes && ed->is_dma_buff == 0)
+      {
+        user_data_t *udat =  (user_data_t *)BUS2VIR(qtd->buffer_end + 1);
+        memcpy(udat->user_buf, udat->dma_buf, xferred_bytes);
+        //Free the DMA buffer outside of the IRQ
+        hcd_event_t event =
+            {
+                .event_id = USBH_EVENT_FUNC_CALL,
+                .func_call.func = deferred_dma_free,
+                .func_call.param = (void *)udat->dma_buf,
+            };
+        hcd_event_handler(&event, true);
+      }
       hcd_event_xfer_complete(ed->dev_addr, tu_edpt_addr(ed->ep_number, dir), xferred_bytes, event, true);
     }
 
-    td_head = (ohci_td_item_t*) td_head->next;
+    td_head = (ohci_td_item_t*) BUS2VIR((ohci_td_item_t*) td_head->next);
   }
 }
 
@@ -609,35 +657,36 @@ void hcd_int_handler(uint8_t hostid)
   // Frame number overflow
   if ( int_status & OHCI_INT_FRAME_OVERFLOW_MASK )
   {
-    ohci_data.frame_number_hi++;
+    ohci_data->frame_number_hi++;
   }
 
   //------------- RootHub status -------------//
   if ( int_status & OHCI_INT_RHPORT_STATUS_CHANGE_MASK )
   {
-    uint32_t const rhport_status = OHCI_REG->rhport_status[0] & RHPORT_ALL_CHANGE_MASK;
-
-    // TODO dual port is not yet supported
-    if ( rhport_status & RHPORT_CONNECT_STATUS_CHANGE_MASK )
+    for (int i = 0; i < OHCI_RH_PORTS; i++)
     {
-      // TODO check if remote wake-up
-      if ( OHCI_REG->rhport_status_bit[0].current_connect_status )
+      uint32_t const rhport_status = OHCI_REG->rhport_status[i] & RHPORT_ALL_CHANGE_MASK;
+
+      if ( rhport_status & RHPORT_CONNECT_STATUS_CHANGE_MASK )
       {
-        // TODO reset port immediately, without this controller will got 2-3 (debouncing connection status change)
-        OHCI_REG->rhport_status[0] = RHPORT_PORT_RESET_STATUS_MASK;
-        hcd_event_device_attach(hostid, true);
-      }else
-      {
-        hcd_event_device_remove(hostid, true);
+        // TODO check if remote wake-up
+        if ( OHCI_REG->rhport_status_bit[i].current_connect_status )
+        {
+          // TODO reset port immediately, without this controller will got 2-3 (debouncing connection status change)
+          OHCI_REG->rhport_status[i] = RHPORT_PORT_RESET_STATUS_MASK;
+          hcd_event_device_attach(i, true);
+        }else
+        {
+          hcd_event_device_remove(i, true);
+        }
       }
+
+      if ( rhport_status & RHPORT_PORT_SUSPEND_CHANGE_MASK)
+      {
+
+      }
+      OHCI_REG->rhport_status[i] = rhport_status; // acknowledge all interrupt
     }
-
-    if ( rhport_status & RHPORT_PORT_SUSPEND_CHANGE_MASK)
-    {
-
-    }
-
-    OHCI_REG->rhport_status[0] = rhport_status; // acknowledge all interrupt
   }
 
   //------------- Transfer Complete -------------//

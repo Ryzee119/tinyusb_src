@@ -42,6 +42,10 @@
 #if TUSB_OPT_HOST_ENABLED
   #include "host/usbh.h"
 
+  #if CFG_TUH_XINPUT
+    #include "xinput_host.h"
+  #endif
+
   #if CFG_TUH_HID
     #include "class/hid/hid_host.h"
   #endif
