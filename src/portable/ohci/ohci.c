@@ -440,7 +440,11 @@ static void td_insert_to_ed(ohci_ed_t* p_ed, ohci_gtd_t * p_gtd)
   // tail is always NULL
   if ( tu_align16(p_ed->td_head.address) == 0 )
   { // TD queue is empty --> head = TD
+    p_ed->skip = 1;
+    asm volatile("sfence" ::: "memory");
     p_ed->td_head.address |= (uint32_t) _phys_addr(p_gtd);
+    asm volatile("sfence" ::: "memory");
+    p_ed->skip = 0;
   }
   else
   { // TODO currently only support queue up to 2 TD each endpoint at a time

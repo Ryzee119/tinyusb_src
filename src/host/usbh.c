@@ -484,7 +484,7 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
       case HCD_EVENT_DEVICE_ATTACH:
         // due to the shared _usbh_ctrl_buf, we must complete enumerating one device before enumerating another one.
         // TODO better to have an separated queue for newly attached devices
-        if (_dev0.enumerating) {
+        if (_dev0.enumerating || _ctrl_xfer.stage != CONTROL_STAGE_IDLE) {
           TU_LOG_USBH("[%u:] USBH Defer Attach until current enumeration complete\r\n", event.rhport);
 
           bool is_empty = osal_queue_empty(_usbh_q);
