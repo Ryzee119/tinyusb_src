@@ -710,7 +710,7 @@ void hcd_int_handler(uint8_t hostid, bool in_isr) {
         if ( OHCI_REG->rhport_status_bit[i].current_connect_status )
         {
           // TODO reset port immediately, without this controller will got 2-3 (debouncing connection status change)
-          OHCI_REG->rhport_status[i] = RHPORT_PORT_RESET_STATUS_MASK;
+          //OHCI_REG->rhport_status[i] = RHPORT_PORT_RESET_STATUS_MASK;
           hcd_event_device_attach(i, true);
         }else
         {
